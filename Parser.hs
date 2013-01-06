@@ -1,9 +1,12 @@
 module Parser where
 
+import Control.Monad.Error
 import Control.Applicative hiding ((<|>), many, optional)
+
 import Data.Char
-import Text.Parsec
+import Text.Parsec hiding (runParser)
 import Text.Parsec.String
+
 import Types
 
 parseSymbol :: Parser SchemeVal
@@ -38,5 +41,13 @@ parseExpr = spaces *> expr
            <|> parseList
            <|> parseQuated
 
-readExpr :: String -> Either ParseError SchemeVal
-readExpr = parse parseExpr "scheme"
+runParser :: Parser a -> String -> Either SchemeError a
+runParser parser input = case parse parser "scheme" input of
+                           Left e -> throwError $ strMsg $ show e 
+                           Right val -> return val
+
+readExpr :: String -> Either SchemeError SchemeVal
+readExpr = runParser parseExpr 
+
+readExprs :: String -> Either SchemeError [SchemeVal]
+readExprs =  runParser $ sepEndBy parseExpr spaces
