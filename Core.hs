@@ -10,9 +10,9 @@ import Types
 -- Evalution
 
 evalExprs :: SchemeEnv -> [SchemeVal] -> SchemeM SchemeVal
-evalExprs env (expr : []) = evalExpr env expr
-evalExprs env (expr : exprs) = evalExpr env expr >> evalExprs env exprs
 evalExprs env [] = throwError $ strMsg "empty body"
+evalExprs env [expr] = evalExpr env expr
+evalExprs env (expr : exprs) = evalExpr env expr >> evalExprs env exprs
 
 evalExpr :: SchemeEnv -> SchemeVal -> SchemeM SchemeVal
 evalExpr env expr@(Pair car cdr) = do
@@ -31,20 +31,38 @@ primitiveEnv = extendEnv nullEnv `liftM` makeFrame primitives
 
 -- Primitive Syntax
 
-primitiveSyntax = [("lambda", Syntax lambda)]
+primitiveSyntax = [("quote",  Syntax quote),
+                   ("lambda", Syntax lambda),
+                   ("if",     Syntax if'),
+                   ("set!",   Syntax set)]
 
 lambda :: SchemeSyntax 
 lambda env (formals : body) = return . Proc $ \args -> do
   bindings <- bind formals args
   env <- extendEnv env `liftM` makeFrame bindings
   evalExprs env body
-  where bind (Pair (Symbol s) rest) (val : args) = liftM ((s, val) :) $ bind rest args
-        bind (Pair (Symbol s) rest) [] = throwError $ strMsg "too few arguments"
-        bind (Symbol s) args = return [(s, toSchemeVal args)]
+  where bind (Pair (Symbol var) rest) (val : args) = liftM ((var, val) :) $ bind rest args
+        bind (Pair (Symbol _) _) [] = throwError $ strMsg "too few arguments"
+        bind (Symbol var) args = return [(var, toSchemeVal args)]
         bind Nil (_:_) = throwError $ strMsg "too many arguments"
         bind Nil [] = return []
         bind _ _ = throwError $ strMsg "malformed lambda"
 lambda env  _ = throwError $ strMsg "malformed lambda"
+
+quote :: SchemeSyntax
+quote _ [datum] = return datum
+quote _ _ = throwError $ strMsg "malformed quote"
+
+if' :: SchemeSyntax
+if' env [test, expr, expr'] = evalExpr env test >>= fromSchemeVal >>=
+                              evalExpr env . bool expr expr' 
+  where bool a a' b = if b then a else a'
+if' _ _ = throwError $ strMsg "malformed if"
+
+set :: SchemeSyntax
+set env [(Symbol var), expr] = evalExpr env expr >>= setVar env var >>
+                               return Unspecified
+set _ _ = throwError $ strMsg "malformed set"
 
 -- Primitive Procedures
 
@@ -54,22 +72,23 @@ primitiveProcs = [("display", Proc display),
                   ("*", Proc $ toSchemeNumericOp mul)]
 
 display :: SchemeProc
-display (val : []) = liftIO . liftM toSchemeVal $ print val
-display (_:_) = throwError $ strMsg "too many arguments"
+display [val] = liftIO $ print val >> return Unspecified
 display [] = throwError $ strMsg "too few arguments"
+display _ = throwError $ strMsg "too many arguments"
 
 type NumericOp = [Integer] -> Either SchemeError Integer
 
 toSchemeNumericOp :: NumericOp -> SchemeProc
-toSchemeNumericOp op ns = mapM fromSchemeVal ns >>= liftError . liftM toSchemeVal . op
+toSchemeNumericOp op ns = mapM fromSchemeVal ns >>=
+                          liftError . liftM toSchemeVal . op
 
 add :: NumericOp
 add = return . foldl' (+) 0
 
 sub :: NumericOp
-sub ns@(_:_:_) = return $ foldl1' (-) ns
-sub (n : []) = return $ negate n
-sub _ = throwError $ strMsg "procedure requires at least one argument"
+sub [] = throwError $ strMsg "procedure requires at least one argument"
+sub [n] = return $ negate n
+sub ns = return $ foldl1' (-) ns
 
 mul :: NumericOp
 mul = return . foldl' (*) 1

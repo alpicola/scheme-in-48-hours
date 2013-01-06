@@ -40,33 +40,39 @@ data SchemeVal = Symbol String
 type SchemeProc = [SchemeVal] -> SchemeM SchemeVal
 type SchemeSyntax = SchemeEnv -> [SchemeVal] -> SchemeM SchemeVal
 
-class PrimitiveVal a where
+class Convertible a where
   fromSchemeVal :: SchemeVal -> SchemeM a
   toSchemeVal :: a -> SchemeVal
 
-instance PrimitiveVal Integer where
+instance Convertible SchemeVal where
+  fromSchemeVal = return
+  toSchemeVal = id
+
+instance Convertible Bool where
+  fromSchemeVal (Bool b) = return b
+  fromSchemeVal val = throwError $ strMsg ("not boolean: " ++  show val)
+  toSchemeVal = Bool
+
+instance Convertible Integer where
   fromSchemeVal (Number n) = return n
   fromSchemeVal val = throwError $ strMsg ("not number: " ++  show val)
   toSchemeVal = Number
 
-instance PrimitiveVal [SchemeVal] where
-  fromSchemeVal val = unfold val
-    where unfold (Pair car cdr@(Pair _ _)) = liftM (car :) $ unfold cdr
-          unfold (Pair car Nil) = return [car]
+instance Convertible a => Convertible [a] where
+  fromSchemeVal p@(Pair _ _) = unfold p
+    where unfold (Pair car cdr) = liftM2 (:) (fromSchemeVal car) (unfold cdr)
           unfold Nil = return []
-          unfold _ = throwError $ strMsg ("improper list: " ++ show val)
-  toSchemeVal = foldr Pair Nil
-
-instance PrimitiveVal () where
-  fromSchemeVal _ = return ()
-  toSchemeVal _ = Unspecified
+          unfold _ = throwError $ strMsg ("improper list: " ++ show p)
+  fromSchemeVal val = throwError $ strMsg ("not list: " ++ show val)
+  toSchemeVal = foldr Pair Nil . map toSchemeVal
 
 -- Variables
 
-type SchemeFrame = Map String (IORef SchemeVal)
+type SchemeVar = IORef SchemeVal
+type SchemeFrame = Map String SchemeVar
 type SchemeEnv = [SchemeFrame]
 
-refVar :: SchemeEnv -> String -> SchemeM (IORef SchemeVal)
+refVar :: SchemeEnv -> String -> SchemeM SchemeVar
 refVar env var = maybe (throwError $ strMsg ("unbound variable: " ++ var))
                        return
                        (msum $ map (Map.lookup var) env)
@@ -90,9 +96,16 @@ makeFrame = liftIO . liftM Map.fromList . mapM (snd newIORef)
 -- External representations
 
 instance Show SchemeVal where
-  show (Symbol str) = str
+  show (Symbol s)   = s
   show (Bool True)  = "#t"
   show (Bool False) = "#f"
-  show (Number int) = show int
+  show (Number n)   = show n
+  show (Proc _)     = "#<procedure>"
+  show (Syntax _)   = "#<syntax>"
+  show p@(Pair _ _) = "(" ++ showList p ++ ")"
+    where showList (Pair car Nil) = show car
+          showList (Pair car cdr) = show car ++ " " ++ showList cdr 
+          showList Nil = ""
+          showList val = " . " ++ show val 
   show Nil          = "()"
-  show _            = undefined
+  show Unspecified  = "#<unspecified>"
