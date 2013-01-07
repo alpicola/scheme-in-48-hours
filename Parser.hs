@@ -36,14 +36,14 @@ parseQuated = quote <$> (char '\'' *> parseExpr)
 parseExpr :: Parser SchemeVal
 parseExpr = spaces *> expr
   where expr = try parseNumber
-           <|> parseSymbol
+           <|> try parseSymbol
            <|> parseBool
            <|> parseList
            <|> parseQuated
 
 runParser :: Parser a -> String -> Either SchemeError a
 runParser parser input = case parse parser "scheme" input of
-                           Left e -> throwError $ strMsg $ show e 
+                           Left error -> throwError $ ParseError error 
                            Right val -> return val
 
 readExpr :: String -> Either SchemeError SchemeVal

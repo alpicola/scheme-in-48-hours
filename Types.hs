@@ -6,18 +6,25 @@ import Control.Monad.Error
 import Control.Arrow
 
 import Data.IORef
+import Data.List
 import Data.Map (Map)
 import qualified Data.Map as Map
+
+import Text.Parsec (ParseError)
 
 -- Errors
 
 data SchemeError = Error String
+                 | TypeError String SchemeVal
+                 | ArgumentError String [SchemeVal]
+                 | SyntaxError String SchemeVal
+                 | ParseError ParseError
 
 instance Error SchemeError where
   strMsg = Error
 
 instance Show SchemeError where
-  show (Error msg) = "Error: " ++ msg
+  show = showError
 
 newtype SchemeM a = SchemeM { runSchemeM :: ErrorT SchemeError IO a }
   deriving (Monad, MonadIO, MonadError SchemeError)
@@ -40,6 +47,9 @@ data SchemeVal = Symbol String
 type SchemeProc = [SchemeVal] -> SchemeM SchemeVal
 type SchemeSyntax = SchemeEnv -> [SchemeVal] -> SchemeM SchemeVal
 
+instance Show SchemeVal where
+  show = showVal
+
 class Convertible a where
   fromSchemeVal :: SchemeVal -> SchemeM a
   toSchemeVal :: a -> SchemeVal
@@ -48,23 +58,53 @@ instance Convertible SchemeVal where
   fromSchemeVal = return
   toSchemeVal = id
 
+instance Convertible String where
+  fromSchemeVal (Symbol s) = return s
+  fromSchemeVal val = throwError $ TypeError "symbol" val
+  toSchemeVal = Symbol
+
 instance Convertible Bool where
   fromSchemeVal (Bool b) = return b
-  fromSchemeVal val = throwError $ strMsg ("not boolean: " ++  show val)
+  fromSchemeVal val = throwError $ TypeError "boolean" val
   toSchemeVal = Bool
 
 instance Convertible Integer where
   fromSchemeVal (Number n) = return n
-  fromSchemeVal val = throwError $ strMsg ("not number: " ++  show val)
+  fromSchemeVal val = throwError $ TypeError "number" val
   toSchemeVal = Number
 
-instance Convertible a => Convertible [a] where
+instance Convertible [SchemeVal] where
   fromSchemeVal p@(Pair _ _) = unfold p
-    where unfold (Pair car cdr) = liftM2 (:) (fromSchemeVal car) (unfold cdr)
+    where unfold (Pair car cdr) = liftM (car :) $ unfold cdr
           unfold Nil = return []
-          unfold _ = throwError $ strMsg ("improper list: " ++ show p)
-  fromSchemeVal val = throwError $ strMsg ("not list: " ++ show val)
-  toSchemeVal = foldr Pair Nil . map toSchemeVal
+          unfold _ = throwError $ TypeError "proper list" p
+  fromSchemeVal Nil = return []
+  fromSchemeVal val = throwError $ TypeError "list" val
+  toSchemeVal = foldr Pair Nil
+
+isSymbol :: SchemeVal -> Bool
+isSymbol (Symbol _) = True
+isSymbol _ = False
+
+isBool :: SchemeVal -> Bool
+isBool (Bool _) = True
+isBool _ = False
+
+isNumber :: SchemeVal -> Bool
+isNumber (Number _) = True
+isNumber _ = False
+
+isProc :: SchemeVal -> Bool
+isProc (Proc _) = True
+isProc _ = False
+
+isPair :: SchemeVal -> Bool
+isPair (Pair _ _) = True
+isPair _ = False
+
+isNil :: SchemeVal -> Bool
+isNil Nil = True
+isNil _ = False
 
 -- Variables
 
@@ -73,15 +113,16 @@ type SchemeFrame = Map String SchemeVar
 type SchemeEnv = [SchemeFrame]
 
 refVar :: SchemeEnv -> String -> SchemeM SchemeVar
-refVar env var = maybe (throwError $ strMsg ("unbound variable: " ++ var))
+refVar env var = maybe (throwError $ Error ("unbound variable: " ++ var))
                        return
                        (msum $ map (Map.lookup var) env)
 
 getVar :: SchemeEnv -> String -> SchemeM SchemeVal
 getVar env var = (refVar env var) >>= liftIO . readIORef
 
-setVar :: SchemeEnv -> String -> SchemeVal -> SchemeM ()
-setVar env var val = (refVar env var) >>= liftIO . flip writeIORef val
+setVar :: SchemeEnv -> String -> SchemeVal -> SchemeM SchemeVal
+setVar env var val = (refVar env var) >>= liftIO . flip writeIORef val >>
+                     return Unspecified
 
 nullEnv :: SchemeEnv
 nullEnv = []
@@ -95,17 +136,29 @@ makeFrame = liftIO . liftM Map.fromList . mapM (snd newIORef)
 
 -- External representations
 
-instance Show SchemeVal where
-  show (Symbol s)   = s
-  show (Bool True)  = "#t"
-  show (Bool False) = "#f"
-  show (Number n)   = show n
-  show (Proc _)     = "#<procedure>"
-  show (Syntax _)   = "#<syntax>"
-  show p@(Pair _ _) = "(" ++ showList p ++ ")"
-    where showList (Pair car Nil) = show car
-          showList (Pair car cdr) = show car ++ " " ++ showList cdr 
-          showList Nil = ""
-          showList val = " . " ++ show val 
-  show Nil          = "()"
-  show Unspecified  = "#<unspecified>"
+showError :: SchemeError -> String
+showError (Error msg) = "Error: " ++ msg
+showError (TypeError expected found) = "Type eror: expected " ++ expected ++
+                                       ", found " ++ show found
+showError (ArgumentError num []) = "Argument error: required " ++ num
+showError (ArgumentError num found) = "Argument error: expected " ++ num ++
+                                      ", found " ++ show (length found) ++
+                                      ": " ++ intercalate ", " (map show found)
+showError (SyntaxError msg form) = "Syntax error: " ++ msg ++
+                                   ": " ++ show form
+showError (ParseError error) = "Parse error: " ++ show error
+
+showVal :: SchemeVal -> String
+showVal (Symbol s) = s
+showVal (Bool True) = "#t"
+showVal (Bool False) = "#f"
+showVal (Number n) = show n
+showVal (Proc _) = "#<procedure>"
+showVal (Syntax _) = "#<syntax>"
+showVal pair@(Pair _ _) = "(" ++ show' pair ++ ")"
+  where show' (Pair car Nil) = showVal car
+        show' (Pair car cdr) = showVal car ++ " " ++ show' cdr 
+        show' Nil = ""
+        show' val = " . " ++ showVal val 
+showVal Nil = "()"
+showVal Unspecified = "#<unspecified>"

@@ -2,8 +2,10 @@ module Core where
 
 import Control.Monad
 import Control.Monad.Error
+import Control.Arrow
 
 import Data.List
+import Data.Maybe
 
 import Types
 
@@ -16,12 +18,19 @@ evalExprs env (expr : exprs) = evalExpr env expr >> evalExprs env exprs
 
 evalExpr :: SchemeEnv -> SchemeVal -> SchemeM SchemeVal
 evalExpr env expr@(Pair car cdr) = do
-  args <- fromSchemeVal cdr
-  head <- evalExpr env car
-  case head of
-    Proc proc -> mapM (evalExpr env) args >>= proc 
-    Syntax syn -> syn env args
-    _ -> throwError $ strMsg ("invalid application: " ++ show expr)
+  args <- catchError (fromSchemeVal cdr)
+                     (const $ throwError $ SyntaxError msg expr)
+  if isSymbol car
+    then do
+       val <- fromSchemeVal car >>= getVar env
+       case val of
+         Syntax syn -> syn env args
+         _ -> call val args
+    else evalExpr env car >>= flip call args
+  where
+    call (Proc proc) args = mapM (evalExpr env) args >>= proc
+    call val _ = throwError $ TypeError "procedure" val
+    msg = "proper list required for procedure call or macro use"
 evalExpr env (Symbol var) = getVar env var
 evalExpr env val = return val
 
@@ -36,33 +45,44 @@ primitiveSyntax = [("quote",  Syntax quote),
                    ("if",     Syntax if'),
                    ("set!",   Syntax set)]
 
-lambda :: SchemeSyntax 
-lambda env (formals : body) = return . Proc $ \args -> do
-  bindings <- bind formals args
-  env <- extendEnv env `liftM` makeFrame bindings
-  evalExprs env body
-  where bind (Pair (Symbol var) rest) (val : args) = liftM ((var, val) :) $ bind rest args
-        bind (Pair (Symbol _) _) [] = throwError $ strMsg "too few arguments"
-        bind (Symbol var) args = return [(var, toSchemeVal args)]
-        bind Nil (_:_) = throwError $ strMsg "too many arguments"
-        bind Nil [] = return []
-        bind _ _ = throwError $ strMsg "malformed lambda"
-lambda env  _ = throwError $ strMsg "malformed lambda"
+lambda env (formals : body) = do
+  formals <- parse formals
+  return . Proc $ \args -> do 
+    bindings <- bind formals args
+    env <- extendEnv env `liftM` makeFrame bindings
+    evalExprs env body
+  where
+    parse (Pair (Symbol var) cdr) = liftM (first (var:)) $ parse cdr
+    parse (Symbol var) = return ([], Just var)
+    parse Nil = return ([], Nothing)
+    parse _ = malformedSyntax "lambda" (formals : body)
+    bind (vars, dotted) args = bind' vars args
+      where num = show $ length vars
+            bind' (var : vars) (val : vals) = liftM ((var, val) :) $ bind' vars vals
+            bind' (_:_) [] = throwError $ ArgumentError num args
+            bind' [] [] = return []
+            bind' [] vals = maybe (throwError $ ArgumentError num args)
+                                  (\var -> return [(var, toSchemeVal vals)]) dotted
+lambda _ args = malformedSyntax "lambda" args
 
 quote :: SchemeSyntax
 quote _ [datum] = return datum
-quote _ _ = throwError $ strMsg "malformed quote"
+quote _ args = malformedSyntax "quote" args
 
 if' :: SchemeSyntax
 if' env [test, expr, expr'] = evalExpr env test >>= fromSchemeVal >>=
                               evalExpr env . bool expr expr' 
   where bool a a' b = if b then a else a'
-if' _ _ = throwError $ strMsg "malformed if"
+if' _ args = malformedSyntax "if" args
 
 set :: SchemeSyntax
-set env [(Symbol var), expr] = evalExpr env expr >>= setVar env var >>
-                               return Unspecified
-set _ _ = throwError $ strMsg "malformed set"
+set env [(Symbol var), expr] = evalExpr env expr >>= setVar env var
+set _ args = malformedSyntax "set!" args
+
+malformedSyntax :: String -> [SchemeVal] -> SchemeM a
+malformedSyntax keyword args = throwError $ SyntaxError msg form
+  where msg = "malformed " ++ keyword
+        form = toSchemeVal $ Symbol keyword : args
 
 -- Primitive Procedures
 
@@ -73,8 +93,7 @@ primitiveProcs = [("display", Proc display),
 
 display :: SchemeProc
 display [val] = liftIO $ print val >> return Unspecified
-display [] = throwError $ strMsg "too few arguments"
-display _ = throwError $ strMsg "too many arguments"
+display args = throwError $ ArgumentError "1" args 
 
 type NumericOp = [Integer] -> Either SchemeError Integer
 
@@ -86,7 +105,7 @@ add :: NumericOp
 add = return . foldl' (+) 0
 
 sub :: NumericOp
-sub [] = throwError $ strMsg "procedure requires at least one argument"
+sub [] = throwError $ ArgumentError "at least 1" []
 sub [n] = return $ negate n
 sub ns = return $ foldl1' (-) ns
 
