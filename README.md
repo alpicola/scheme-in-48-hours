@@ -20,11 +20,10 @@ Major features of the R6RS's base library
   - `quote`
   - `lambda`
   - `if`
-  - binding constructs
-    - `let`
-    - `let*`
-    - `letrec`
-    - `letrec*`
+  - `let`
+  - `let*`
+  - `letrec`
+  - `letrec*`
   - `begin`
 - first-class continuations
   - `call-with-current-continuation`
