@@ -1,15 +1,33 @@
 # Scheme in 48 Hours
 
-An implemention of a small subset of R5RS Scheme.
+An implemention of a small subset of R6RS Scheme.
 
 goal:
 
-- lambda
-- hygienic macros (`define-syntax`)
-- first-class continuations (`call-with-current-continuation`)
+Major features of the R6RS's base library
+
 - types
-  - boolean
-  - number (only integer)
-  - pair (and proper/improper list)
-  - procedure
-  - symbol
+  - `boolean`
+  - `pair` (immutable)
+  - `symbol`
+  - `number` (only integer)
+  - `procedure`
+  - `null`
+- definitions
+  - `define`
+  - `define-syntax`
+- expressions
+  - `quote`
+  - `lambda`
+  - `if`
+  - binding constructs
+    - `let`
+    - `let*`
+    - `letrec`
+    - `letrec*`
+  - `begin`
+- first-class continuations
+  - `call-with-current-continuation`
+- hygienic macros
+  - `syntax-rules`
+  - `identifier-syntax`
