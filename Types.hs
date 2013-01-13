@@ -1,14 +1,10 @@
-{-# LANGUAGE FlexibleInstances,GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleInstances, GeneralizedNewtypeDeriving #-}
 module Types where
 
 import Control.Monad
 import Control.Monad.Error
-import Control.Arrow
 
-import Data.IORef
 import Data.List
-import Data.Map (Map)
-import qualified Data.Map as Map
 
 import Text.Parsec (ParseError)
 
@@ -24,31 +20,50 @@ instance Error SchemeError where
   strMsg = Error
 
 instance Show SchemeError where
-  show = showError
+  show (Error msg) = "Error: " ++ msg
+  show (TypeError expected found) = "Type eror: expected " ++ expected ++
+                                    ", found " ++ show found
+  show (ArgumentError num []) = "Argument error: required " ++ num
+  show (ArgumentError num found) = "Argument error: expected " ++ num ++
+                                   ", found " ++ show (length found) ++
+                                   ": " ++ intercalate ", " (map show found)
+  show (SyntaxError msg form) = "Syntax error: " ++ msg ++
+                                ": " ++ show form
+  show (ParseError err) = "Parse error: " ++ show err
 
 newtype SchemeM a = SchemeM { runSchemeM :: ErrorT SchemeError IO a }
   deriving (Monad, MonadIO, MonadError SchemeError)
 
-liftError :: Either SchemeError a -> SchemeM a
-liftError (Left e) = throwError e
-liftError (Right val) = return val
+liftError :: MonadError e m => Either e a -> m a
+liftError = either throwError return
 
 -- Values
 
-data SchemeVal = Symbol String
-               | Bool Bool
+data SchemeVal = Bool Bool
+               | Pair SchemeVal SchemeVal
+               | Symbol String
                | Number Integer
                | Proc SchemeProc
-               | Syntax SchemeSyntax
-               | Pair SchemeVal SchemeVal
                | Nil
                | Unspecified
+               | Undefined
 
 type SchemeProc = [SchemeVal] -> SchemeM SchemeVal
-type SchemeSyntax = SchemeEnv -> [SchemeVal] -> SchemeM SchemeVal
 
 instance Show SchemeVal where
-  show = showVal
+  show (Bool True) = "#t"
+  show (Bool False) = "#f"
+  show pair@(Pair _ _) = "(" ++ show' pair ++ ")"
+    where show' (Pair car Nil) = show car
+          show' (Pair car cdr) = show car ++ " " ++ show' cdr 
+          show' Nil = ""
+          show' val = " . " ++ show val 
+  show (Symbol s) = s
+  show (Number n) = show n
+  show (Proc _) = "#<procedure>"
+  show Nil = "()"
+  show Unspecified = "#<unspecified>"
+  show Undefined = "#<undefined>"
 
 class Convertible a where
   fromSchemeVal :: SchemeVal -> SchemeM a
@@ -58,20 +73,10 @@ instance Convertible SchemeVal where
   fromSchemeVal = return
   toSchemeVal = id
 
-instance Convertible String where
-  fromSchemeVal (Symbol s) = return s
-  fromSchemeVal val = throwError $ TypeError "symbol" val
-  toSchemeVal = Symbol
-
 instance Convertible Bool where
   fromSchemeVal (Bool b) = return b
   fromSchemeVal val = throwError $ TypeError "boolean" val
   toSchemeVal = Bool
-
-instance Convertible Integer where
-  fromSchemeVal (Number n) = return n
-  fromSchemeVal val = throwError $ TypeError "number" val
-  toSchemeVal = Number
 
 instance Convertible [SchemeVal] where
   fromSchemeVal p@(Pair _ _) = unfold p
@@ -82,13 +87,32 @@ instance Convertible [SchemeVal] where
   fromSchemeVal val = throwError $ TypeError "list" val
   toSchemeVal = foldr Pair Nil
 
-isSymbol :: SchemeVal -> Bool
-isSymbol (Symbol _) = True
-isSymbol _ = False
+instance Convertible String where
+  fromSchemeVal (Symbol s) = return s
+  fromSchemeVal val = throwError $ TypeError "symbol" val
+  toSchemeVal = Symbol
+
+instance Convertible Integer where
+  fromSchemeVal (Number n) = return n
+  fromSchemeVal val = throwError $ TypeError "number" val
+  toSchemeVal = Number
+
+instance Convertible SchemeProc where
+  fromSchemeVal (Proc proc) = return proc
+  fromSchemeVal val = throwError $ TypeError "procedure" val
+  toSchemeVal = Proc
 
 isBool :: SchemeVal -> Bool
 isBool (Bool _) = True
 isBool _ = False
+
+isPair :: SchemeVal -> Bool
+isPair (Pair _ _) = True
+isPair _ = False
+
+isSymbol :: SchemeVal -> Bool
+isSymbol (Symbol _) = True
+isSymbol _ = False
 
 isNumber :: SchemeVal -> Bool
 isNumber (Number _) = True
@@ -98,67 +122,26 @@ isProc :: SchemeVal -> Bool
 isProc (Proc _) = True
 isProc _ = False
 
-isPair :: SchemeVal -> Bool
-isPair (Pair _ _) = True
-isPair _ = False
-
 isNil :: SchemeVal -> Bool
 isNil Nil = True
 isNil _ = False
 
--- Variables
+-- Core Forms
 
-type SchemeVar = IORef SchemeVal
-type SchemeFrame = Map String SchemeVar
-type SchemeEnv = [SchemeFrame]
+data SchemeForm = Val SchemeVal
+                | Var String
+                | App SchemeForm [SchemeForm]
+                | Lambda [String] (Maybe String) [SchemeForm]
+                | If SchemeForm SchemeForm SchemeForm
+                | Set String SchemeForm
 
-refVar :: SchemeEnv -> String -> SchemeM SchemeVar
-refVar env var = maybe (throwError $ Error ("unbound variable: " ++ var))
-                       return
-                       (msum $ map (Map.lookup var) env)
-
-getVar :: SchemeEnv -> String -> SchemeM SchemeVal
-getVar env var = (refVar env var) >>= liftIO . readIORef
-
-setVar :: SchemeEnv -> String -> SchemeVal -> SchemeM SchemeVal
-setVar env var val = (refVar env var) >>= liftIO . flip writeIORef val >>
-                     return Unspecified
-
-nullEnv :: SchemeEnv
-nullEnv = []
-
-extendEnv :: SchemeEnv -> SchemeFrame -> SchemeEnv
-extendEnv = flip (:)
-
-makeFrame :: [(String, SchemeVal)] -> SchemeM SchemeFrame
-makeFrame = liftIO . liftM Map.fromList . mapM (snd newIORef)
-  where snd = runKleisli . second . Kleisli
-
--- External representations
-
-showError :: SchemeError -> String
-showError (Error msg) = "Error: " ++ msg
-showError (TypeError expected found) = "Type eror: expected " ++ expected ++
-                                       ", found " ++ show found
-showError (ArgumentError num []) = "Argument error: required " ++ num
-showError (ArgumentError num found) = "Argument error: expected " ++ num ++
-                                      ", found " ++ show (length found) ++
-                                      ": " ++ intercalate ", " (map show found)
-showError (SyntaxError msg form) = "Syntax error: " ++ msg ++
-                                   ": " ++ show form
-showError (ParseError error) = "Parse error: " ++ show error
-
-showVal :: SchemeVal -> String
-showVal (Symbol s) = s
-showVal (Bool True) = "#t"
-showVal (Bool False) = "#f"
-showVal (Number n) = show n
-showVal (Proc _) = "#<procedure>"
-showVal (Syntax _) = "#<syntax>"
-showVal pair@(Pair _ _) = "(" ++ show' pair ++ ")"
-  where show' (Pair car Nil) = showVal car
-        show' (Pair car cdr) = showVal car ++ " " ++ show' cdr 
-        show' Nil = ""
-        show' val = " . " ++ showVal val 
-showVal Nil = "()"
-showVal Unspecified = "#<unspecified>"
+instance Show SchemeForm where
+  show (Val val) = show val 
+  show (Var var) = var
+  show (App proc args) = "(" ++ intercalate " " (map show (proc : args)) ++ ")"
+  show (Lambda vars dotted body) = "(lambda (" ++ intercalate " " vars ++
+                                   maybe "" (" . " ++) dotted ++ ") " ++
+                                   intercalate " " (map show body) ++ ")"
+  show (If test expr expr') = "(if " ++ show test ++ " " ++ show expr ++
+                              " " ++ show expr' ++ ")"
+  show (Set var expr) = "(set! " ++ var ++ " " ++ show expr ++ ")"

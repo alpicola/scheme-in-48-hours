@@ -2,9 +2,9 @@
 
 An implemention of a small subset of R6RS Scheme.
 
-goal:
+## Goal
 
-Major features of the R6RS's base library
+The following features of the R6RS's base library
 
 - types
   - `boolean`
@@ -20,6 +20,7 @@ Major features of the R6RS's base library
   - `quote`
   - `lambda`
   - `if`
+  - `set!`
   - `let`
   - `let*`
   - `letrec`
@@ -29,4 +30,3 @@ Major features of the R6RS's base library
   - `call-with-current-continuation`
 - hygienic macros
   - `syntax-rules`
-  - `identifier-syntax`

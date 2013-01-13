@@ -24,30 +24,31 @@ parseNumber = Number . read <$> signed
              <|> (:) <$> char '-' <*> many1 digit
 
 parseList :: Parser SchemeVal
-parseList = parens $ (flip $ foldr Pair) <$> exprs <*> option Nil dotted
-  where exprs  = sepEndBy parseExpr spaces
-        dotted = char '.' *> parseExpr
+parseList = parens $ flip (foldr Pair) <$> parseDatums <*> option Nil dotted
+  where dotted = char '.' *> parseDatum
         parens = between (char '(') (char ')')
 
 parseQuated :: Parser SchemeVal
-parseQuated = quote <$> (char '\'' *> parseExpr)
+parseQuated = quote <$> (char '\'' *> parseDatum)
   where quote = Pair (Symbol "quote") . flip Pair Nil
 
-parseExpr :: Parser SchemeVal
-parseExpr = spaces *> expr
-  where expr = try parseNumber
+parseDatum :: Parser SchemeVal
+parseDatum = spaces *> form
+  where form = try parseNumber
            <|> try parseSymbol
            <|> parseBool
            <|> parseList
            <|> parseQuated
 
+parseDatums :: Parser [SchemeVal]
+parseDatums = sepEndBy parseDatum spaces
+
 runParser :: Parser a -> String -> Either SchemeError a
-runParser parser input = case parse parser "scheme" input of
-                           Left error -> throwError $ ParseError error 
-                           Right val -> return val
+runParser parser input = either (throwError . ParseError) return
+                                (parse parser "scheme" input)
 
-readExpr :: String -> Either SchemeError SchemeVal
-readExpr = runParser parseExpr 
+readDatum :: String -> Either SchemeError SchemeVal
+readDatum = runParser parseDatum
 
-readExprs :: String -> Either SchemeError [SchemeVal]
-readExprs =  runParser $ sepEndBy parseExpr spaces
+readDatums :: String -> Either SchemeError [SchemeVal]
+readDatums =  runParser parseDatums
