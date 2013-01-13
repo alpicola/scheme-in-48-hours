@@ -15,9 +15,9 @@ import Macro hiding (extendEnv, makeFrame)
 
 runScheme :: String -> IO (Either SchemeError SchemeVal)
 runScheme src = runErrorT . runSchemeM $ do
-  forms <- liftError $ readDatums src
-  env <- primitiveEnv
-  expandTopLevel (toMacroEnv env) forms >>= evalExpr env
+    forms <- liftError $ readDatums src
+    env <- primitiveEnv
+    expandTopLevel (toMacroEnv env) forms >>= evalExpr env
 
 -- Environment
 
