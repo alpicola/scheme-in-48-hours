@@ -58,54 +58,60 @@ getMacro env var = join . msum $ map (Map.lookup var) env
 
 expandTopLevel :: MacroEnv -> [SchemeVal] -> SchemeM SchemeForm
 expandTopLevel env forms = do
-    (_, forms) <- foldM wrapExpr (emptyFrame, []) forms
+    (_, forms) <- foldM expandForm (emptyFrame, []) forms
     expandBody env forms
   where
-    wrapExpr (frame, forms) form@(Pair (Symbol keyword) cdr)
+    expandForm acc@(frame, forms) form@(Pair (Symbol keyword) cdr)
         | isBound env' keyword =
             case getMacro env' keyword of
-                Just macro -> expandMacro env' macro cdr >>=
-                              wrapExpr (frame, forms)
-                Nothing -> return (frame, wrapExpr' form : forms)
-        | otherwise = 
-            case keyword of
-                "define" -> do (var, _) <- getSubforms form >>= expandDef . tail
-                               flip (,) (form : forms) `liftM` defVar frame var
-                "define-syntax" -> do (var, macro) <- getSubforms form >>=
-                                                      expandDefSyn . tail
-                                      flip (,) forms `liftM` defMacro frame var macro
-                _ -> return (frame, wrapExpr' form : forms)
+                Just macro -> expandMacro env' macro cdr >>= expandForm acc
+                Nothing -> return (frame, wrapExpr form : forms)
+        | keyword == "define" = do
+            (var, _) <- getSubforms form >>= expandDef . tail
+            frame <- defVar frame var
+            return (frame, form : forms)
+        | keyword == "define-syntax" = do
+            (var, macro) <- getSubforms form >>= expandDefSyn . tail
+            frame <- defMacro frame var macro
+            return (frame, forms)
+        | keyword == "begin" = getSubforms form >>= foldM expandForm acc . tail
+        | otherwise = return (frame, wrapExpr form : forms)
       where env' = extendEnv env frame
-    wrapExpr (frame, forms) form = return (frame, wrapExpr' form : forms)
-    wrapExpr' form = toSchemeVal [Symbol "define", Symbol "#_", form]
+    expandForm (frame, forms) form = return (frame, wrapExpr form : forms)
+    wrapExpr form = toSchemeVal [Symbol "define", Symbol "#_", form']
+      where form' = toSchemeVal [Symbol "begin", form, Unspecified]
 
 expandBody :: MacroEnv -> [SchemeVal] -> SchemeM SchemeForm
 expandBody env forms = do
-    (frame, bindings, exprs) <- expandDefs emptyFrame [] forms
-    let expand = expandExpr $ extendEnv env frame
-    exprs <- liftM2 (++) (mapM (second' expand >=> return . uncurry Set) bindings)
-                         (mapM expand exprs)
-    return $ App (Lambda (fst $ unzip bindings) Nothing exprs)
-                 (map (const $ Val Undefined) bindings)
+    (frame, bindings, exprs, _) <- foldM expandForm (emptyFrame, [], [], True) forms
+    let env' = extendEnv env frame
+    if null bindings
+        then Begin `liftM` mapM (expandExpr env') exprs
+        else do
+            bindings <- mapM (second' $ expandExpr env') bindings
+            exprs <- mapM (expandExpr env') exprs
+            let body = Begin $ map (uncurry Set) bindings ++ exprs
+            return $ App (Lambda (fst $ unzip bindings) Nothing body)
+                         (map (const $ Val Undefined) bindings)
   where
-    expandDefs frame bindings (form@(Pair (Symbol keyword) cdr) : forms)
+    expandForm acc@(frame, bindings, forms, isDef) form@(Pair (Symbol keyword) cdr)
         | isBound env' keyword =
             case getMacro env' keyword of
-                Just macro -> do form <- expandMacro env' macro cdr
-                                 expandDefs frame bindings (form : forms)
-                Nothing -> return (frame, bindings, form : forms)
-        | otherwise =
-            case keyword of
-                "define" -> do (var, form) <- getSubforms form >>= expandDef . tail
-                               frame <- defVar frame var
-                               expandDefs frame ((var, form) : bindings) forms
-                "define-syntax" -> do (var, macro) <- getSubforms form >>=
-                                                      expandDefSyn . tail
-                                      frame <- defMacro frame var macro
-                                      expandDefs frame bindings forms
-                _ -> return (frame, bindings, form : forms)
+                Just macro -> expandMacro env' macro cdr >>= expandForm acc
+                Nothing -> return (frame, bindings, form : forms, False)
+        | isDef && keyword == "define" = do
+            (var, form) <- getSubforms form >>= expandDef . tail
+            frame <- defVar frame var
+            return (frame, (var, form) : bindings, forms, True)
+        | isDef && keyword == "define-syntax" = do
+            (var, macro) <- getSubforms form >>= expandDefSyn . tail
+            frame <- defMacro frame var macro
+            return (frame, bindings, forms, True)
+        | keyword == "begin" = getSubforms form >>= foldM expandForm acc . tail
+        | otherwise = return (frame, bindings, form : forms, False)
       where env' = extendEnv env frame
-    expandDefs frame bindings forms = return (frame, bindings, forms) 
+    expandForm (frame, bindings, forms, _) form =
+        return (frame, bindings, form : forms, False) 
     second' = runKleisli . second . Kleisli
 
 expandDef :: [SchemeVal] -> SchemeM (String, SchemeVal)
@@ -130,6 +136,7 @@ expandExpr env form@(Pair sym@(Symbol keyword) cdr)
             "lambda" -> getSubforms form >>= expandLambda env . tail
             "if" -> getSubforms form >>= expandIf env . tail
             "set!" -> getSubforms form >>= expandSet env . tail
+            "begin" -> getSubforms form >>= expandBegin env . tail
             "define" -> throwError $ SyntaxError msg form
             "define-syntax" -> throwError $ SyntaxError msg form
             _ -> getSubforms form >>= expandApp env
@@ -153,7 +160,7 @@ expandLambda env (params : body) = do
     (vars, dotted) <- parseParams params
     frame <- makeFrame $ zip (vars ++ maybeToList dotted) (repeat Nothing)
     let env' = extendEnv env frame
-    expandBody env' body >>= return . Lambda vars dotted . return 
+    Lambda vars dotted `liftM` expandBody env' body
 expandLambda _ subforms = malformedSyntax "lambda" subforms
 
 expandIf :: MacroEnv -> [SchemeVal] -> SchemeM SchemeForm
@@ -164,8 +171,11 @@ expandIf env subforms = do
         _ -> malformedSyntax "if" subforms
 
 expandSet :: MacroEnv -> [SchemeVal] -> SchemeM SchemeForm
-expandSet env [Symbol var, expr] = expandExpr env expr >>= return . Set var
+expandSet env [Symbol var, expr] = Set var `liftM` expandExpr env expr
 expandSet _ subforms = malformedSyntax "set!" subforms
+
+expandBegin :: MacroEnv -> [SchemeVal] -> SchemeM SchemeForm
+expandBegin env subforms = Begin `liftM` mapM (expandExpr env) subforms
 
 expandMacro :: MacroEnv -> Macro -> SchemeVal -> SchemeM SchemeVal
 expandMacro env macro form = undefined
@@ -176,7 +186,7 @@ getSubforms form = catchError (fromSchemeVal form)
   where msg = "proper list required for procedure call or buildin syntax"
 
 parseParams :: SchemeVal -> SchemeM ([String], Maybe String)
-parseParams (Pair (Symbol var) cdr) = liftM (first (var:)) $ parseParams cdr
+parseParams (Pair (Symbol var) cdr) = first (var:) `liftM` parseParams cdr
 parseParams (Symbol var) = return ([], Just var)
 parseParams Nil = return ([], Nothing)
 parseParams val = throwError $ SyntaxError "indentifier required" val

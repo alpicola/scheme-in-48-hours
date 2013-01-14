@@ -59,7 +59,7 @@ evalExpr env (App expr args) = do proc <- evalExpr env expr >>= fromSchemeVal
 evalExpr env (Lambda vars dotted body) = return . Proc $ \args -> do
     bindings <- bind vars dotted args
     env <- extendEnv env `liftM` makeFrame bindings
-    evalExprs env body
+    evalExpr env body
   where
     bind vars dotted args = bind' vars args
       where 
@@ -72,11 +72,11 @@ evalExpr env (Lambda vars dotted body) = return . Proc $ \args -> do
 evalExpr env (If test expr expr') = do test <- evalExpr env test >>= fromSchemeVal
                                        evalExpr env (if test then expr else expr')
 evalExpr env (Set var expr) = evalExpr env expr >>= setVar env var
-
-evalExprs :: SchemeEnv -> [SchemeForm] -> SchemeM SchemeVal
-evalExprs env [] = throwError $ Error "empty body"
-evalExprs env [expr] = evalExpr env expr
-evalExprs env (expr : exprs) = evalExpr env expr >> evalExprs env exprs
+evalExpr env (Begin exprs) = evalExprs exprs
+  where
+    evalExprs [] = return Unspecified
+    evalExprs [expr] = evalExpr env expr
+    evalExprs (expr : exprs) = evalExpr env expr >> evalExprs exprs
 
 -- Primitives
 

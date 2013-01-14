@@ -32,7 +32,7 @@ instance Show SchemeError where
   show (ParseError err) = "Parse error: " ++ show err
 
 newtype SchemeM a = SchemeM { runSchemeM :: ErrorT SchemeError IO a }
-  deriving (Monad, MonadIO, MonadError SchemeError)
+  deriving (Functor, Monad, MonadIO, MonadError SchemeError)
 
 liftError :: MonadError e m => Either e a -> m a
 liftError = either throwError return
@@ -131,9 +131,10 @@ isNil _ = False
 data SchemeForm = Val SchemeVal
                 | Var String
                 | App SchemeForm [SchemeForm]
-                | Lambda [String] (Maybe String) [SchemeForm]
+                | Lambda [String] (Maybe String) SchemeForm
                 | If SchemeForm SchemeForm SchemeForm
                 | Set String SchemeForm
+                | Begin [SchemeForm]
 
 instance Show SchemeForm where
   show (Val val) = show val 
@@ -141,7 +142,9 @@ instance Show SchemeForm where
   show (App proc args) = "(" ++ intercalate " " (map show (proc : args)) ++ ")"
   show (Lambda vars dotted body) = "(lambda (" ++ intercalate " " vars ++
                                    maybe "" (" . " ++) dotted ++ ") " ++
-                                   intercalate " " (map show body) ++ ")"
+                                   show body ++ ")"
   show (If test expr expr') = "(if " ++ show test ++ " " ++ show expr ++
                               " " ++ show expr' ++ ")"
   show (Set var expr) = "(set! " ++ var ++ " " ++ show expr ++ ")"
+  show (Begin []) = "(begin)"
+  show (Begin exprs) = "(begin " ++ intercalate " " (map show exprs) ++ ")"
