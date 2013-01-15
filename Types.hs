@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleInstances, GeneralizedNewtypeDeriving #-}
 module Types where
 
+import Control.Applicative
 import Control.Monad
 import Control.Monad.Error
 
@@ -50,6 +51,14 @@ data SchemeVal = Bool Bool
 
 type SchemeProc = [SchemeVal] -> SchemeM SchemeVal
 
+instance Eq SchemeVal where
+  (Bool b) == (Bool b') = b == b'
+  (Pair x y) == (Pair x' y') = x == x' && y == y'
+  (Symbol s) == (Symbol s') = s == s'
+  (Number n) == (Number n') = n == n'
+  Nil == Nil = True
+  _ == _ = False
+
 instance Show SchemeVal where
   show (Bool True) = "#t"
   show (Bool False) = "#f"
@@ -66,7 +75,7 @@ instance Show SchemeVal where
   show Undefined = "#<undefined>"
 
 class Convertible a where
-  fromSchemeVal :: SchemeVal -> SchemeM a
+  fromSchemeVal :: SchemeVal -> Either SchemeError a
   toSchemeVal :: a -> SchemeVal
 
 instance Convertible SchemeVal where
@@ -79,13 +88,18 @@ instance Convertible Bool where
   toSchemeVal = Bool
 
 instance Convertible [SchemeVal] where
-  fromSchemeVal p@(Pair _ _) = unfold p
-    where unfold (Pair car cdr) = liftM (car :) $ unfold cdr
+  fromSchemeVal pair@(Pair _ _) = unfold pair
+    where unfold (Pair car cdr) = (car :) <$> unfold cdr
           unfold Nil = return []
-          unfold _ = throwError $ TypeError "proper list" p
+          unfold _ = throwError $ TypeError "proper list" pair
   fromSchemeVal Nil = return []
-  fromSchemeVal val = throwError $ TypeError "list" val
+  fromSchemeVal val = throwError $ TypeError "proper list" val
   toSchemeVal = foldr Pair Nil
+
+instance Convertible (SchemeVal, SchemeVal) where
+  fromSchemeVal (Pair car cdr) = return (car, cdr)
+  fromSchemeVal val = throwError $ TypeError "pair" val
+  toSchemeVal = uncurry Pair
 
 instance Convertible String where
   fromSchemeVal (Symbol s) = return s

@@ -1,5 +1,6 @@
 module Core (runScheme) where
 
+import Control.Applicative
 import Control.Arrow
 import Control.Monad
 import Control.Monad.Error
@@ -17,7 +18,8 @@ runScheme :: String -> IO (Either SchemeError SchemeVal)
 runScheme src = runErrorT . runSchemeM $ do
     forms <- liftError $ readDatums src
     env <- primitiveEnv
-    expandTopLevel (toMacroEnv env) forms >>= evalExpr env
+    form <- liftError $ expandTopLevel (toMacroEnv env) forms
+    evalExpr env form
 
 -- Environment
 
@@ -54,53 +56,72 @@ toMacroEnv = map $ Map.map (const Nothing)
 evalExpr :: SchemeEnv -> SchemeForm -> SchemeM SchemeVal
 evalExpr env (Val val) = return val 
 evalExpr env (Var var) = getVar env var
-evalExpr env (App expr args) = do proc <- evalExpr env expr >>= fromSchemeVal
-                                  mapM (evalExpr env) args >>= proc
+evalExpr env (App expr args) = do
+    proc <- evalExpr env expr >>= liftError . fromSchemeVal
+    mapM (evalExpr env) args >>= proc
 evalExpr env (Lambda vars dotted body) = return . Proc $ \args -> do
     bindings <- bind vars dotted args
-    env <- extendEnv env `liftM` makeFrame bindings
+    env <- extendEnv env <$> makeFrame bindings
     evalExpr env body
   where
     bind vars dotted args = bind' vars args
       where 
         num = show $ length vars
-        bind' (var : vars) (val : vals) = liftM ((var, val) :) $ bind' vars vals
+        bind' (var : vars) (val : vals) = ((var, val) :) <$> bind' vars vals
         bind' (_:_) [] = throwError $ ArgumentError num args
         bind' [] [] = return []
         bind' [] vals = maybe (throwError $ ArgumentError num args)
                               (\var -> return [(var, toSchemeVal vals)]) dotted
-evalExpr env (If test expr expr') = do test <- evalExpr env test >>= fromSchemeVal
-                                       evalExpr env (if test then expr else expr')
+evalExpr env (If test expr expr') = do
+    test <- evalExpr env test >>= liftError . fromSchemeVal
+    evalExpr env (if test then expr else expr')
 evalExpr env (Set var expr) = evalExpr env expr >>= setVar env var
-evalExpr env (Begin exprs) = evalExprs exprs
-  where
-    evalExprs [] = return Unspecified
-    evalExprs [expr] = evalExpr env expr
-    evalExprs (expr : exprs) = evalExpr env expr >> evalExprs exprs
+evalExpr env (Begin exprs) = foldM (const $ evalExpr env) Unspecified exprs
 
--- Primitives
+-- Procedures
 
 primitiveEnv :: SchemeM SchemeEnv
-primitiveEnv = extendEnv nullEnv `liftM` makeFrame primitiveProcs
+primitiveEnv = extendEnv nullEnv <$> makeFrame (map (second Proc) primitiveProcs)
 
-primitiveProcs = [ ("display", Proc display)
-                 , ("+", Proc $ toSchemeProc add)
-                 , ("-", Proc $ toSchemeProc sub)
-                 , ("*", Proc $ toSchemeProc mul)
-                 , ("<", Proc $ toSchemeProc lt)
-                 , (">", Proc $ toSchemeProc gt)]
+primitiveProcs :: [(String, SchemeProc)]
+primitiveProcs = [ ("boolean?",   oneArg $ return . Bool . isBool)
+                 , ("pair?",      oneArg $ return . Bool . isPair)
+                 , ("symbole?",   oneArg $ return . Bool . isSymbol)
+                 , ("number?",    oneArg $ return . Bool . isNumber)
+                 , ("procedure?", oneArg $ return . Bool . isProc)
+                 , ("null?",      oneArg $ return . Bool . isNil)
+                 , ("equal?",     twoArg $ ((return . Bool) .) . (==))
+                 , ("=",  toSchemeProc $ allPairs (==))
+                 , ("<",  toSchemeProc $ allPairs (<))
+                 , (">",  toSchemeProc $ allPairs (>))
+                 , ("<=", toSchemeProc $ allPairs (<=))
+                 , (">=", toSchemeProc $ allPairs (>=))
+                 , ("+",  toSchemeProc add)
+                 , ("-",  toSchemeProc sub)
+                 , ("*",  toSchemeProc mul)
+                 , ("cons",    cons)
+                 , ("car",     car)
+                 , ("cdr",     cdr)
+                 , ("apply",   apply)
+                 , ("display", display) ]
 
 toSchemeProc :: (Convertible a, Convertible b) =>
                     ([a] -> Either SchemeError b) -> SchemeProc
-toSchemeProc f args = mapM fromSchemeVal args >>=
-                      liftError . liftM toSchemeVal . f
+toSchemeProc f args = liftError . liftM toSchemeVal $ mapM fromSchemeVal args >>= f
 
-display [val] = liftIO $ print val >> return Unspecified
-display args = throwError $ ArgumentError "1" args 
+oneArg :: (SchemeVal -> SchemeM SchemeVal) -> SchemeProc
+oneArg f [arg] = f arg
+oneArg f args  = throwError $ ArgumentError "1" args
 
-pairs :: [a] -> [(a, a)]
-pairs (x:x':xs) = (x, x') : pairs (x':xs)
-pairs _ = []
+twoArg :: (SchemeVal -> SchemeVal -> SchemeM SchemeVal) -> SchemeProc
+twoArg f [arg1, arg2] = f arg1 arg2
+twoArg f args  = throwError $ ArgumentError "2" args
+
+allPairs :: (Integer -> Integer -> Bool) -> [Integer] -> Either SchemeError Bool
+allPairs op args@(_:_:_) = return . all (uncurry op) $ pairs args
+  where pairs (x:y:xs) = (x, y) : pairs (y:xs)
+        pairs _ = []
+allPairs op args = throwError $ ArgumentError "at least 2" (map toSchemeVal args)
 
 add :: [Integer] -> Either SchemeError Integer
 add = return . foldl' (+) 0
@@ -113,10 +134,24 @@ sub ns = return $ foldl1' (-) ns
 mul :: [Integer] -> Either SchemeError Integer
 mul = return . foldl' (*) 1
 
-lt :: [Integer] -> Either SchemeError Bool
-lt ns@(_:_:_) = return . all (uncurry (<)) $ pairs ns
-lt args = throwError $ ArgumentError "at least 2" (map toSchemeVal args)
+cons :: SchemeProc
+cons = twoArg $ (return .) . Pair
 
-gt :: [Integer] -> Either SchemeError Bool
-gt ns@(_:_:_) = return . all (uncurry (>)) $ pairs ns
-gt args = throwError $ ArgumentError "at least 2" (map toSchemeVal args)
+car :: SchemeProc
+car = oneArg car'
+  where car' (Pair val _) = return val
+        car' val = throwError $ TypeError "pair" val
+
+cdr :: SchemeProc
+cdr = oneArg cdr'
+  where cdr' (Pair _ val) = return val
+        cdr' val = throwError $ TypeError "pair" val
+
+apply :: SchemeProc
+apply (val : args@(_:_)) = do
+    proc <- liftError $ fromSchemeVal val
+    liftError (fromSchemeVal (last args)) >>= proc . (init args ++)
+apply args = throwError $ ArgumentError "at least 2" args
+
+display :: SchemeProc
+display = oneArg $ \val -> liftIO $ print val >> return Unspecified
