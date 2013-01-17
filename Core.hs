@@ -53,9 +53,13 @@ toMacroEnv = map $ Map.map (const Nothing)
 
 -- Evalution
 
-evalExpr :: SchemeEnv -> SchemeForm -> SchemeM SchemeVal
+evalExpr :: SchemeEnv -> SchemeExpr -> SchemeM SchemeVal
 evalExpr env (Val val) = return val 
-evalExpr env (Var var) = getVar env var
+evalExpr env (Var var) = do
+    val <- getVar env var
+    case val of
+        Undefined -> throwError $ Error ("uninitialized variable: " ++ var)
+        _ -> return val
 evalExpr env (App expr args) = do
     proc <- evalExpr env expr >>= liftError . fromSchemeVal
     mapM (evalExpr env) args >>= proc

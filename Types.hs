@@ -142,15 +142,15 @@ isNil _ = False
 
 -- Core Forms
 
-data SchemeForm = Val SchemeVal
+data SchemeExpr = Val SchemeVal
                 | Var String
-                | App SchemeForm [SchemeForm]
-                | Lambda [String] (Maybe String) SchemeForm
-                | If SchemeForm SchemeForm SchemeForm
-                | Set String SchemeForm
-                | Begin [SchemeForm]
+                | App SchemeExpr [SchemeExpr]
+                | Lambda [String] (Maybe String) SchemeExpr
+                | If SchemeExpr SchemeExpr SchemeExpr
+                | Set String SchemeExpr
+                | Begin [SchemeExpr]
 
-instance Show SchemeForm where
+instance Show SchemeExpr where
   show (Val val) = show val 
   show (Var var) = var
   show (App proc args) = "(" ++ intercalate " " (map show (proc : args)) ++ ")"

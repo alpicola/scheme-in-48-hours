@@ -57,7 +57,7 @@ getMacro env var = join . msum $ map (Map.lookup var) env
 
 -- Expansion
 
-expandTopLevel :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
+expandTopLevel :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandTopLevel env forms = do
     (_, forms) <- foldM expandForm (emptyFrame, []) forms
     expandBody env forms
@@ -82,16 +82,16 @@ expandTopLevel env forms = do
     wrapExpr form = toSchemeVal [Symbol "define", Symbol "#_", form']
       where form' = toSchemeVal [Symbol "begin", form, Unspecified]
 
-expandBody :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
+expandBody :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandBody env forms = do
     (frame, bindings, exprs, _) <- foldM expandForm (emptyFrame, [], [], True) forms
     let env' = extendEnv env frame
     if null bindings
-        then Begin <$> mapM (expandExpr env') exprs
+        then seqExprs <$> mapM (expandExpr env') exprs
         else do
             bindings <- mapM (second' $ expandExpr env') bindings
             exprs <- mapM (expandExpr env') exprs
-            let body = Begin $ map (uncurry Set) bindings ++ exprs
+            let body = seqExprs $ map (uncurry Set) bindings ++ exprs
             return $ App (Lambda (fst $ unzip bindings) Nothing body)
                          (map (const $ Val Undefined) bindings)
   where
@@ -125,7 +125,7 @@ expandDefSyn :: [SchemeVal] -> Either SchemeError (String, Macro)
 expandDefSyn [Symbol var, form] = (,) var <$> compileMacro form
 expandDefSyn subforms = malformedSyntax "define-syntax" subforms
 
-expandExpr :: MacroEnv -> SchemeVal -> Either SchemeError SchemeForm
+expandExpr :: MacroEnv -> SchemeVal -> Either SchemeError SchemeExpr
 expandExpr env form@(Pair (Symbol keyword) _)
     | isBound env keyword =
         case getMacro env keyword of
@@ -148,15 +148,15 @@ expandExpr env (Symbol var)
     | otherwise = throwError $ Error ("unbound variable: " ++ var)
 expandExpr env val = return $ Val val
 
-expandApp :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
+expandApp :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandApp env (proc : args) = App <$> expandExpr env proc <*>
                                       mapM (expandExpr env) args
 
-expandQuote :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
+expandQuote :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandQuote _ [datum] = return $ Val datum
 expandQuote _ subforms = malformedSyntax "quote" subforms
 
-expandLambda :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
+expandLambda :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandLambda env (params : body) = do
     (vars, dotted) <- parseParams params
     frame <- makeFrame $ zip (vars ++ maybeToList dotted) (repeat Nothing)
@@ -164,19 +164,19 @@ expandLambda env (params : body) = do
     Lambda vars dotted <$> expandBody env' body
 expandLambda _ subforms = malformedSyntax "lambda" subforms
 
-expandIf :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
+expandIf :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandIf env subforms = do
     forms <- mapM (expandExpr env) subforms
     case forms of
         [test, expr, expr'] -> return $ If test expr expr'
         _ -> malformedSyntax "if" subforms
 
-expandSet :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
+expandSet :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandSet env [Symbol var, expr] = Set var <$> expandExpr env expr
 expandSet _ subforms = malformedSyntax "set!" subforms
 
-expandBegin :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeForm
-expandBegin env subforms = Begin <$> mapM (expandExpr env) subforms
+expandBegin :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
+expandBegin env subforms = seqExprs <$> mapM (expandExpr env) subforms
 
 expandMacro :: MacroEnv -> Macro -> SchemeVal -> Either SchemeError SchemeVal
 expandMacro env macro form = undefined
@@ -196,3 +196,7 @@ malformedSyntax :: String -> [SchemeVal] -> Either SchemeError a
 malformedSyntax keyword subforms = throwError $ SyntaxError msg form
   where msg = "malformed " ++ keyword
         form = toSchemeVal $ Symbol keyword : subforms
+
+seqExprs :: [SchemeExpr] -> SchemeExpr
+seqExprs [expr] = expr
+seqExprs exprs = Begin exprs
