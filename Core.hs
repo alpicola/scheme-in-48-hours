@@ -9,17 +9,19 @@ import Data.IORef
 import Data.List
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe
 
 import Types
 import Parser
 import Macro hiding (extendEnv, makeFrame)
 
-runScheme :: String -> IO (Either SchemeError SchemeVal)
+runScheme :: String -> IO (Either SchemeError ())
 runScheme src = runErrorT . runSchemeM $ do
     forms <- liftError $ readDatums src
     env <- primitiveEnv
     form <- liftError $ expandTopLevel (toMacroEnv env) forms
     evalExpr env form
+    return ()
 
 -- Environment
 
@@ -37,16 +39,16 @@ makeFrame :: [(String, SchemeVal)] -> SchemeM SchemeFrame
 makeFrame = liftIO . liftM Map.fromList . mapM (second' newIORef)
   where second' = runKleisli . second . Kleisli
 
-refVar :: SchemeEnv -> String -> SchemeM SchemeVar
-refVar env var = maybe (throwError $ Error ("unbound variable: " ++ var))
-                       return (msum $ map (Map.lookup var) env)
+refVar :: SchemeEnv -> String -> SchemeVar
+refVar env var = fromJust . msum $ map (Map.lookup var) env
 
 getVar :: SchemeEnv -> String -> SchemeM SchemeVal
-getVar env var = refVar env var >>= liftIO . readIORef
+getVar = ((liftIO . readIORef) .) . refVar
 
 setVar :: SchemeEnv -> String -> SchemeVal -> SchemeM SchemeVal
-setVar env var val = refVar env var >>= liftIO . flip writeIORef val >>
-                     return Unspecified
+setVar env var val = do
+    liftIO $ writeIORef (refVar env var) val
+    return Unspecified
 
 toMacroEnv  :: SchemeEnv -> MacroEnv
 toMacroEnv = map $ Map.map (const Nothing)
@@ -63,24 +65,34 @@ evalExpr env (Var var) = do
 evalExpr env (App expr args) = do
     proc <- evalExpr env expr >>= liftError . fromSchemeVal
     mapM (evalExpr env) args >>= proc
-evalExpr env (Lambda vars dotted body) = return . Proc $ \args -> do
-    bindings <- bind vars dotted args
-    env <- extendEnv env <$> makeFrame bindings
-    evalExpr env body
-  where
-    bind vars dotted args = bind' vars args
-      where 
-        num = show $ length vars
-        bind' (var : vars) (val : vals) = ((var, val) :) <$> bind' vars vals
-        bind' (_:_) [] = throwError $ ArgumentError num args
-        bind' [] [] = return []
-        bind' [] vals = maybe (throwError $ ArgumentError num args)
-                              (\var -> return [(var, toSchemeVal vals)]) dotted
+evalExpr env lambda@(Lambda _ _ _) = return . Proc $ callProc env lambda
 evalExpr env (If test expr expr') = do
     test <- evalExpr env test >>= liftError . fromSchemeVal
     evalExpr env (if test then expr else expr')
 evalExpr env (Set var expr) = evalExpr env expr >>= setVar env var
-evalExpr env (Begin exprs) = foldM (const $ evalExpr env) Unspecified exprs
+evalExpr env (Begin exprs) = evalExprs env exprs
+-- this may cause stack overflow
+-- evalExpr env (Begin exprs) = foldM (const $ evalExpr env) Unspecified exprs
+
+evalExprs :: SchemeEnv -> [SchemeExpr] -> SchemeM SchemeVal
+evalExprs env [] = return Unspecified
+evalExprs env [expr] = evalExpr env expr
+evalExprs env (expr : exprs) = evalExpr env expr >> evalExprs env exprs
+
+callProc :: SchemeEnv -> SchemeExpr -> [SchemeVal] -> SchemeM SchemeVal
+callProc env (Lambda [] Nothing body) [] = evalExpr env body
+callProc env (Lambda [] Nothing body) args = throwError $ ArgumentError "0" args
+callProc env (Lambda vars dotted body) args = do
+    bindings <- bind vars args
+    env <- extendEnv env <$> makeFrame bindings
+    evalExpr env body
+  where
+    num = show $ length vars
+    bind (var : vars) (val : vals) = ((var, val) :) <$> bind vars vals
+    bind (_:_) [] = throwError $ ArgumentError num args
+    bind [] [] = return []
+    bind [] vals = maybe (throwError $ ArgumentError num args)
+                         (\var -> return [(var, toSchemeVal vals)]) dotted
 
 -- Procedures
 

@@ -6,6 +6,7 @@ import Control.Monad
 import Control.Monad.Error
 
 import Data.List
+import Data.Maybe
 
 import Text.Parsec (ParseError)
 
@@ -33,7 +34,7 @@ instance Show SchemeError where
   show (ParseError err) = "Parse error: " ++ show err
 
 newtype SchemeM a = SchemeM { runSchemeM :: ErrorT SchemeError IO a }
-  deriving (Functor, Monad, MonadIO, MonadError SchemeError)
+    deriving (Functor, Monad, MonadIO, MonadError SchemeError)
 
 liftError :: MonadError e m => Either e a -> m a
 liftError = either throwError return
@@ -154,6 +155,8 @@ instance Show SchemeExpr where
   show (Val val) = show val 
   show (Var var) = var
   show (App proc args) = "(" ++ intercalate " " (map show (proc : args)) ++ ")"
+  show (Lambda [] dotted body) = "(lambda " ++ fromMaybe "()" dotted ++
+                                  " " ++ show body ++ ")"
   show (Lambda vars dotted body) = "(lambda (" ++ intercalate " " vars ++
                                    maybe "" (" . " ++) dotted ++ ") " ++
                                    show body ++ ")"

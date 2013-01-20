@@ -14,4 +14,11 @@
 (define (reverse l)
   (fold cons '() l))
 
-(display (reverse '(1 2 3 4)))
+(define (iota n)
+  (define (iter n l)
+    (if (= n 0)
+        l
+        (iter (- n 1) (cons n l))))
+  (iter n '()))
+
+(display (reverse (iota 10)))

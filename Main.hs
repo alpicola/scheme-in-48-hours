@@ -12,4 +12,4 @@ main = do args <- getArgs
           src <- if null args
                      then getContents
                      else liftM concat $ mapM readFile args 
-          runScheme src >>= either (putStrLn . show) (const $ return ())
+          runScheme src >>= either (putStrLn . show) return

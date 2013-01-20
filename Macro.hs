@@ -60,7 +60,7 @@ getMacro env var = join . msum $ map (Map.lookup var) env
 expandTopLevel :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
 expandTopLevel env forms = do
     (_, forms) <- foldM expandForm (emptyFrame, []) forms
-    expandBody env forms
+    expandBody env $ reverse forms
   where
     expandForm acc@(frame, forms) form@(Pair (Symbol keyword) _)
         | isBound env' keyword =
@@ -89,8 +89,8 @@ expandBody env forms = do
     if null bindings
         then seqExprs <$> mapM (expandExpr env') exprs
         else do
-            bindings <- mapM (second' $ expandExpr env') bindings
-            exprs <- mapM (expandExpr env') exprs
+            bindings <- mapM (second' $ expandExpr env') $ reverse bindings
+            exprs <- mapM (expandExpr env') $ reverse exprs
             let body = seqExprs $ map (uncurry Set) bindings ++ exprs
             return $ App (Lambda (fst $ unzip bindings) Nothing body)
                          (map (const $ Val Undefined) bindings)
@@ -116,9 +116,10 @@ expandBody env forms = do
     second' = runKleisli . second . Kleisli
 
 expandDef :: [SchemeVal] -> Either SchemeError (String, SchemeVal)
-expandDef [Pair (Symbol var) cdr, form] = return (var, lambda)
-  where lambda = toSchemeVal [Symbol "lambda", cdr, form] 
+expandDef (Pair (Symbol var) cdr : forms) = return (var, lambda)
+  where lambda = toSchemeVal (Symbol "lambda" : cdr : forms) 
 expandDef [Symbol var, form] = return (var, form)
+expandDef [Symbol var] = return (var, Unspecified)
 expandDef subforms = malformedSyntax "define" subforms
 
 expandDefSyn :: [SchemeVal] -> Either SchemeError (String, Macro)
