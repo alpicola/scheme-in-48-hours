@@ -3,6 +3,7 @@ module Core (runScheme) where
 import Control.Applicative
 import Control.Arrow
 import Control.Monad
+import Control.Monad.Cont
 import Control.Monad.Error
 
 import Data.IORef
@@ -16,7 +17,7 @@ import Parser
 import Macro hiding (extendEnv, makeFrame)
 
 runScheme :: String -> IO (Either SchemeError ())
-runScheme src = runErrorT . runSchemeM $ do
+runScheme src = flip runContT return . runErrorT . runSchemeM $ do
     forms <- liftError $ readDatums src
     env <- primitiveEnv
     form <- liftError $ expandTopLevel (toMacroEnv env) forms
@@ -83,16 +84,22 @@ callProc :: SchemeEnv -> SchemeExpr -> [SchemeVal] -> SchemeM SchemeVal
 callProc env (Lambda [] Nothing body) [] = evalExpr env body
 callProc env (Lambda [] Nothing body) args = throwError $ ArgumentError "0" args
 callProc env (Lambda vars dotted body) args = do
-    bindings <- bind vars args
+    bindings <- bind vars dotted args
     env <- extendEnv env <$> makeFrame bindings
     evalExpr env body
   where
-    num = show $ length vars
-    bind (var : vars) (val : vals) = ((var, val) :) <$> bind vars vals
-    bind (_:_) [] = throwError $ ArgumentError num args
-    bind [] [] = return []
-    bind [] vals = maybe (throwError $ ArgumentError num args)
-                         (\var -> return [(var, toSchemeVal vals)]) dotted
+    bind vars (Just var) args = zip vars args
+      where
+        num = "at least " ++ show (length vars)
+        zip (var : vars) (val : vals) = ((var, val) :) <$> zip vars vals
+        zip [] vals = return [(var, toSchemeVal vals)]
+        zip _ _ = throwError $ ArgumentError num args
+    bind vars Nothing args = zip vars args
+      where
+        num = show (length vars)
+        zip (var : vars) (val : vals) = ((var, val) :) <$> zip vars vals
+        zip [] [] = return []
+        zip _ _ = throwError $ ArgumentError num args
 
 -- Procedures
 
@@ -119,6 +126,8 @@ primitiveProcs = [ ("boolean?",   oneArg $ return . Bool . isBool)
                  , ("car",     car)
                  , ("cdr",     cdr)
                  , ("apply",   apply)
+                 , ("call-with-current-continuation", callcc)
+                 , ("call/cc", callcc)
                  , ("display", display) ]
 
 toSchemeProc :: (Convertible a, Convertible b) =>
@@ -168,6 +177,11 @@ apply (val : args@(_:_)) = do
     proc <- liftError $ fromSchemeVal val
     liftError (fromSchemeVal (last args)) >>= proc . (init args ++)
 apply args = throwError $ ArgumentError "at least 2" args
+
+callcc :: SchemeProc
+callcc = oneArg callcc'
+  where callcc' (Proc proc) = callCC $ proc . return . Proc . oneArg
+        callcc' val = throwError $ TypeError "procedure" val
 
 display :: SchemeProc
 display = oneArg $ \val -> liftIO $ print val >> return Unspecified

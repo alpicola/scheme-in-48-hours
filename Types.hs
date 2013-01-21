@@ -3,6 +3,7 @@ module Types where
 
 import Control.Applicative
 import Control.Monad
+import Control.Monad.Cont
 import Control.Monad.Error
 
 import Data.List
@@ -33,8 +34,9 @@ instance Show SchemeError where
                                 ": " ++ show form
   show (ParseError err) = "Parse error: " ++ show err
 
-newtype SchemeM a = SchemeM { runSchemeM :: ErrorT SchemeError IO a }
-    deriving (Functor, Monad, MonadIO, MonadError SchemeError)
+newtype SchemeM a = SchemeM {
+        runSchemeM :: ErrorT SchemeError (ContT (Either SchemeError ()) IO) a
+    } deriving (Functor, Monad, MonadIO, MonadError SchemeError, MonadCont)
 
 liftError :: MonadError e m => Either e a -> m a
 liftError = either throwError return
@@ -154,14 +156,14 @@ data SchemeExpr = Val SchemeVal
 instance Show SchemeExpr where
   show (Val val) = show val 
   show (Var var) = var
-  show (App proc args) = "(" ++ intercalate " " (map show (proc : args)) ++ ")"
+  show (App proc args) = "(" ++ unwords (map show (proc : args)) ++ ")"
   show (Lambda [] dotted body) = "(lambda " ++ fromMaybe "()" dotted ++
                                   " " ++ show body ++ ")"
-  show (Lambda vars dotted body) = "(lambda (" ++ intercalate " " vars ++
+  show (Lambda vars dotted body) = "(lambda (" ++ unwords vars ++
                                    maybe "" (" . " ++) dotted ++ ") " ++
                                    show body ++ ")"
   show (If test expr expr') = "(if " ++ show test ++ " " ++ show expr ++
                               " " ++ show expr' ++ ")"
   show (Set var expr) = "(set! " ++ var ++ " " ++ show expr ++ ")"
   show (Begin []) = "(begin)"
-  show (Begin exprs) = "(begin " ++ intercalate " " (map show exprs) ++ ")"
+  show (Begin exprs) = "(begin " ++ unwords (map show exprs) ++ ")"

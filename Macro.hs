@@ -170,6 +170,7 @@ expandIf env subforms = do
     forms <- mapM (expandExpr env) subforms
     case forms of
         [test, expr, expr'] -> return $ If test expr expr'
+        [test, expr] -> return $ If test expr (Val Unspecified)
         _ -> malformedSyntax "if" subforms
 
 expandSet :: MacroEnv -> [SchemeVal] -> Either SchemeError SchemeExpr
